@@ -57,7 +57,22 @@ typedef struct {
 static rmt_channel_handle_t s_tx_channel = NULL;
 static rmt_encoder_handle_t s_encoder = NULL;
 
+//debug
 
+typedef struct {
+    uint32_t symbol_index_before;
+    uint32_t symbol_index_after;
+    uint32_t symbol_count;
+    uint32_t written;
+    uint32_t encoded_symbols;
+    uint32_t copy_state;
+    uint32_t state;
+} encode_debug_t;
+
+
+static volatile encode_debug_t dbg[8];
+static volatile uint32_t dbg_count = 0;
+static volatile uint32_t dbg_encode_calls = 0;
 /* -------------------------------------------------------------------------- */
 /* Custom RMT encoder                                                        */
 /* -------------------------------------------------------------------------- */
@@ -69,6 +84,7 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     size_t data_size,
     rmt_encode_state_t *ret_state)
 {
+    dbg_encode_calls++;
     ac_ir_encoder_t *enc =
         __containerof(encoder, ac_ir_encoder_t, base);
 
@@ -174,6 +190,12 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     }
 
 
+    uint32_t debug_slot = dbg_count;
+
+    if (debug_slot < 8) {
+        dbg[debug_slot].symbol_index_before = enc->symbol_index;
+        dbg[debug_slot].symbol_count = symbol_count;
+    }
         /*
      * Ask the copy encoder to put the generated symbols into
      * the RMT driver's available memory.
@@ -187,14 +209,37 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
             &copy_state
         );
 
+    size_t encoded_symbols = written;// / sizeof(rmt_symbol_word_t);
+    enc->symbol_index += encoded_symbols;
+
+    if (debug_slot < 8) {
+        dbg[debug_slot].symbol_index_after = enc->symbol_index;
+    }
+
+    if (debug_slot < 8) {
+        dbg[debug_slot].written = written;
+        dbg[debug_slot].encoded_symbols = encoded_symbols;
+        dbg[debug_slot].copy_state = copy_state;
+    }
+
+    enc->symbol_index += encoded_symbols;
+
+    if (debug_slot < 8) {
+        dbg[debug_slot].state = state;
+        dbg_count++;
+    }
+
     /*
      * IMPORTANT FIX:
      * The copy encoder returns the number of BYTES written.
      * We must convert this back to the number of symbols to
      * advance our symbol_index correctly.
      */
-    size_t encoded_symbols = written / sizeof(rmt_symbol_word_t);
-    enc->symbol_index += encoded_symbols;
+    
+
+
+    
+
 
     /*
      * Propagate the copy encoder's "memory full" condition.
@@ -512,6 +557,9 @@ esp_err_t ac_ir_send(
     }
 
 
+
+   
+
     if (s_tx_channel == NULL ||
         s_encoder == NULL) {
 
@@ -519,6 +567,13 @@ esp_err_t ac_ir_send(
     }
 
 
+    ESP_LOGI(TAG, "count=%u", frame->count);
+
+    for (size_t i = 0; i < frame->count; i++) {
+        ESP_LOGI(TAG, "duration[%u] = %u",
+                (unsigned)i,
+                frame->durations[i]);
+    }
     /*
      * One-shot transmission.
      */
@@ -527,6 +582,7 @@ esp_err_t ac_ir_send(
     };
 
 
+    ESP_LOGI(TAG, "=== fu ===");
     esp_err_t ret =
         rmt_transmit(
             s_tx_channel,
@@ -536,7 +592,14 @@ esp_err_t ac_ir_send(
             &tx_config
         );
 
+    ESP_LOGI(TAG, "=== fu again===");
     if (ret != ESP_OK) {
+
+        ESP_LOGI(
+            TAG,
+            "Failed to start RMT TX: %s",
+            esp_err_to_name(ret)
+        );
         return ret;
     }
 
@@ -547,8 +610,30 @@ esp_err_t ac_ir_send(
      * The caller returns only after the complete IR waveform
      * has physically finished transmitting.
      */
-    return rmt_tx_wait_all_done(
+    
+    esp_err_t rett= rmt_tx_wait_all_done(
         s_tx_channel,
         1000
     );
+
+    ESP_LOGI(TAG, "=== ENCODER TRACE ===");
+
+    for (uint32_t i = 0; i < dbg_count && i < 8; i++) {
+        ESP_LOGI(TAG,
+                "call[%u]: before=%u count=%u written=%u encoded=%u after=%u copy_state=0x%x state=0x%x",
+                i,
+                dbg[i].symbol_index_before,
+                dbg[i].symbol_count,
+                dbg[i].written,
+                dbg[i].encoded_symbols,
+                dbg[i].symbol_index_after,
+                dbg[i].copy_state,
+                dbg[i].state);
+    }
+
+    ESP_LOGI(TAG, "ENCODER CALL COUNT = %u",
+         (unsigned)dbg_encode_calls);
+
+    return rett;
+
 }
