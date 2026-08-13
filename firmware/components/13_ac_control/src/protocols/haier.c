@@ -443,7 +443,7 @@ static esp_err_t haier_build_frame(
 
             ret = haier_push_bit(
                 frame,
-                (haier_state[byte] >> bit) & 1
+                (haier_state[byte] >> (7 - bit)) & 1  // <--- FIXED: MSB first
             );
 
             if (ret != ESP_OK) {
