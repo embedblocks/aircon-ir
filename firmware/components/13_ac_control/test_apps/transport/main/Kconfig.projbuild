@@ -1,0 +1,16 @@
+menu "AC IR Transport Test Configuration"
+
+    config AC_IR_TEST_RX_GPIO
+        int "RX GPIO for loopback edge-capture (jumper from ac_ir TX GPIO)"
+        default 3
+        range 0 21
+        help
+            Physically jumper this GPIO to the ac_ir TX GPIO (GPIO10,
+            defined in ac_ir.c). It is configured as a plain
+            interrupt-capable input -- not an RMT channel -- and every
+            edge is timestamped with esp_timer_get_time() and dumped
+            over serial for Python-side envelope reconstruction. See
+            waveform_parser.py one level up in this test_apps/transport/
+            directory.
+
+endmenu

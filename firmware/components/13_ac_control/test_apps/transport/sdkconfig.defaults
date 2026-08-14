@@ -1,0 +1,19 @@
+CONFIG_IDF_TARGET="esp32c3"
+
+# RX loopback GPIO for waveform capture. Jumper this pin to the ac_ir
+# TX GPIO (GPIO10). Override in menuconfig under
+# "AC IR Transport Test Configuration" if GPIO3 isn't free on your board.
+CONFIG_AC_IR_TEST_RX_GPIO=3
+
+# The edge dump can be several thousand lines for the primary 112-duration
+# test frame; a higher monitor baud keeps the pytest read fast.
+
+
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_ESPTOOLPY_MONITOR_BAUD=921600
+CONFIG_MONITOR_BAUD=921600
+
+# Same fix as test_apps/test_app/sdkconfig.defaults: ESP32-C3 boards with
+# only native USB need console I/O routed to USB Serial/JTAG, or stdin
+# (fgets in app_main) silently doesn't work even though stdout does.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
