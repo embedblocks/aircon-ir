@@ -82,6 +82,14 @@ static volatile uint32_t dbg_encode_calls = 0;
 /* Custom RMT encoder                                                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Custom RMT encoder                                                        */
+/* -------------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------- */
+/* Custom RMT encoder                                                        */
+/* -------------------------------------------------------------------------- */
+
 static size_t IRAM_ATTR ac_ir_encoder_encode(
     rmt_encoder_t *encoder,
     rmt_channel_handle_t channel,
@@ -89,154 +97,78 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     size_t data_size,
     rmt_encode_state_t *ret_state)
 {
-    dbg_encode_calls++;
-    ac_ir_encoder_t *enc =
-        __containerof(encoder, ac_ir_encoder_t, base);
+    ac_ir_encoder_t *enc = __containerof(encoder, ac_ir_encoder_t, base);
+    const ac_ir_frame_t *frame = (const ac_ir_frame_t *)primary_data;
 
-    const ac_ir_frame_t *frame =
-        (const ac_ir_frame_t *)primary_data;
+    rmt_encode_state_t copy_state = RMT_ENCODING_RESET;
+    rmt_encode_state_t state = RMT_ENCODING_RESET;
 
-    rmt_encode_state_t copy_state =
-        RMT_ENCODING_RESET;
-
-    rmt_encode_state_t state =
-        RMT_ENCODING_RESET;
-
-    /*
-     * Validate the input expected by this encoder.
-     */
-    if (frame == NULL ||
-        data_size != sizeof(ac_ir_frame_t) ||
-        frame->durations == NULL ||
-        frame->count == 0) {
-
+    if (frame == NULL || data_size != sizeof(ac_ir_frame_t) || 
+        frame->durations == NULL || frame->count == 0) {
         *ret_state = RMT_ENCODING_COMPLETE;
         return 0;
     }
 
-    /*
-     * Calculate how many RMT symbols remain.
-     * Two durations make one RMT symbol.
-     */
-    size_t total_symbols =
-        (frame->count + 1) / 2;
+    size_t total_symbols = (frame->count + 1) / 2;
 
     if (enc->symbol_index >= total_symbols) {
         *ret_state = RMT_ENCODING_COMPLETE;
         return data_size;
     }
 
-    size_t remaining_symbols =
-        total_symbols - enc->symbol_index;
-
-    size_t symbol_count =
-        remaining_symbols;
+    size_t remaining_symbols = total_symbols - enc->symbol_index;
+    size_t symbol_count = remaining_symbols;
 
     if (symbol_count > AC_IR_ENCODER_SYMBOLS) {
         symbol_count = AC_IR_ENCODER_SYMBOLS;
     }
 
-    /*
-     * Convert the protocol's mark/space durations into
-     * RMT symbols.
-     */
     for (size_t i = 0; i < symbol_count; i++) {
+        size_t symbol_index = enc->symbol_index + i;
+        size_t duration_index = symbol_index * 2;
 
-        size_t symbol_index =
-            enc->symbol_index + i;
-
-        size_t duration_index =
-            symbol_index * 2;
-
-        /* MARK */
         enc->symbols[i].level0 = 1;
-        enc->symbols[i].duration0 =
-            frame->durations[duration_index];
+        enc->symbols[i].duration0 = frame->durations[duration_index];
 
-        /* SPACE */
         enc->symbols[i].level1 = 0;
-
         if ((duration_index + 1) < frame->count) {
-            enc->symbols[i].duration1 =
-                frame->durations[duration_index + 1];
+            enc->symbols[i].duration1 = frame->durations[duration_index + 1];
         } else {
             enc->symbols[i].duration1 = 0;
         }
     }
 
-    uint32_t debug_slot = dbg_count;
-
-    if (debug_slot < 8) {
-        dbg[debug_slot].symbol_index_before = enc->symbol_index;
-        dbg[debug_slot].symbol_count = symbol_count;
-        dbg[debug_slot].total_symbols = total_symbols;
-        dbg[debug_slot].enc_address = (uintptr_t)enc;
-    }
-
-        /*
-     * Ask the copy encoder to put the generated symbols into
-     * the RMT driver's available memory.
-     */
-    size_t written =
-        enc->copy_encoder->encode(
-            enc->copy_encoder,
-            channel,
-            enc->symbols,
-            symbol_count * sizeof(rmt_symbol_word_t),
-            &copy_state
-        );
+    size_t written = enc->copy_encoder->encode(
+        enc->copy_encoder,
+        channel,
+        enc->symbols,
+        symbol_count * sizeof(rmt_symbol_word_t),
+        &copy_state
+    );
 
     /* 
-     * FIX 1: You were right! written is already in symbols.
-     * We do NOT divide by sizeof(rmt_symbol_word_t).
+     * ROOT CAUSE FIX: written is in BYTES. We must divide by 
+     * sizeof(rmt_symbol_word_t) to get the number of symbols.
      */
-    size_t encoded_symbols = written;
-    
-    /* 
-     * FIX 2: Removed the duplicate increment!
-     * This was the root cause of the 48-bit truncation.
-     */
+    size_t encoded_symbols = written / sizeof(rmt_symbol_word_t);
     enc->symbol_index += encoded_symbols;
 
     if (copy_state & RMT_ENCODING_MEM_FULL) {
         state |= RMT_ENCODING_MEM_FULL;
     }
 
-    /*
-     * We have encoded the entire frame.
-     */
     if (enc->symbol_index >= total_symbols) {
         state |= RMT_ENCODING_COMPLETE;
     }
 
-    if (debug_slot < 8) {
-        dbg[debug_slot].symbol_index_after = enc->symbol_index;
-        dbg[debug_slot].written = written;
-        dbg[debug_slot].encoded_symbols = encoded_symbols;
-        dbg[debug_slot].copy_state = copy_state;
-        dbg[debug_slot].state = state;
-        dbg_count++;
-    }
-
-    /*
-     * If complete, return data_size to tell the RMT driver 
-     * we have consumed the entire payload.
-     */
     if (state & RMT_ENCODING_COMPLETE) {
         *ret_state = state;
-        return data_size; // Keep this! It prevents pointer corruption.
+        return data_size;
     }
 
     *ret_state = state;
-
-    /*
-     * Return 0 because we are NOT consuming primary_data 
-     * sequentially. This is required for stateful encoders.
-     */
     return 0;
 }
-
-/* -------------------------------------------------------------------------- */
 /* Encoder reset                                                              */
 /* -------------------------------------------------------------------------- */
 
