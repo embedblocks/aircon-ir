@@ -63,12 +63,13 @@ typedef struct {
     uint32_t symbol_index_before;
     uint32_t symbol_index_after;
     uint32_t symbol_count;
+    uint32_t total_symbols;
     uint32_t written;
     uint32_t encoded_symbols;
     uint32_t copy_state;
     uint32_t state;
+    uintptr_t enc_address;
 } encode_debug_t;
-
 
 static volatile encode_debug_t dbg[8];
 static volatile uint32_t dbg_count = 0;
@@ -195,8 +196,10 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     if (debug_slot < 8) {
         dbg[debug_slot].symbol_index_before = enc->symbol_index;
         dbg[debug_slot].symbol_count = symbol_count;
+        dbg[debug_slot].total_symbols = total_symbols;
+        dbg[debug_slot].enc_address = (uintptr_t)enc;
     }
-        /*
+            /*
      * Ask the copy encoder to put the generated symbols into
      * the RMT driver's available memory.
      */
@@ -618,18 +621,20 @@ esp_err_t ac_ir_send(
 
     ESP_LOGI(TAG, "=== ENCODER TRACE ===");
 
-    for (uint32_t i = 0; i < dbg_count && i < 8; i++) {
-        ESP_LOGI(TAG,
-                "call[%u]: before=%u count=%u written=%u encoded=%u after=%u copy_state=0x%x state=0x%x",
-                i,
-                dbg[i].symbol_index_before,
-                dbg[i].symbol_count,
-                dbg[i].written,
-                dbg[i].encoded_symbols,
-                dbg[i].symbol_index_after,
-                dbg[i].copy_state,
-                dbg[i].state);
-    }
+        for (uint32_t i = 0; i < dbg_count && i < 8; i++) {
+            ESP_LOGI(TAG,
+                    "call[%u]: enc=%p before=%u count=%u total=%u written=%u encoded=%u after=%u copy=0x%x state=0x%x",
+                    i,
+                    (void *)dbg[i].enc_address,
+                    dbg[i].symbol_index_before,
+                    dbg[i].symbol_count,
+                    dbg[i].total_symbols,
+                    dbg[i].written,
+                    dbg[i].encoded_symbols,
+                    dbg[i].symbol_index_after,
+                    dbg[i].copy_state,
+                    dbg[i].state);
+        }
 
     ESP_LOGI(TAG, "ENCODER CALL COUNT = %u",
          (unsigned)dbg_encode_calls);
