@@ -78,6 +78,10 @@ static volatile uint32_t dbg_encode_calls = 0;
 /* Custom RMT encoder                                                        */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Custom RMT encoder                                                        */
+/* -------------------------------------------------------------------------- */
+
 static size_t IRAM_ATTR ac_ir_encoder_encode(
     rmt_encoder_t *encoder,
     rmt_channel_handle_t channel,
@@ -100,9 +104,6 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
 
     /*
      * Validate the input expected by this encoder.
-     *
-     * This function runs in the RMT encoding path, so don't
-     * call anything that can block here.
      */
     if (frame == NULL ||
         data_size != sizeof(ac_ir_frame_t) ||
@@ -115,20 +116,14 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
 
     /*
      * Calculate how many RMT symbols remain.
-     *
-     * Two durations make one RMT symbol:
-     *
-     *     duration[0] = MARK
-     *     duration[1] = SPACE
-     *
-     * Therefore an odd final duration is also supported.
+     * Two durations make one RMT symbol.
      */
     size_t total_symbols =
         (frame->count + 1) / 2;
 
     if (enc->symbol_index >= total_symbols) {
         *ret_state = RMT_ENCODING_COMPLETE;
-        return 0;
+        return data_size;
     }
 
     size_t remaining_symbols =
@@ -140,7 +135,6 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     if (symbol_count > AC_IR_ENCODER_SYMBOLS) {
         symbol_count = AC_IR_ENCODER_SYMBOLS;
     }
-
 
     /*
      * Convert the protocol's mark/space durations into
@@ -154,42 +148,21 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
         size_t duration_index =
             symbol_index * 2;
 
-
-        /*
-         * MARK
-         *
-         * RMT carrier is enabled by the channel during this
-         * portion because level0 = 1.
-         */
+        /* MARK */
         enc->symbols[i].level0 = 1;
-
         enc->symbols[i].duration0 =
             frame->durations[duration_index];
 
-
-        /*
-         * SPACE
-         *
-         * Carrier is disabled because level1 = 0.
-         */
+        /* SPACE */
         enc->symbols[i].level1 = 0;
 
-
         if ((duration_index + 1) < frame->count) {
-
             enc->symbols[i].duration1 =
                 frame->durations[duration_index + 1];
-
         } else {
-
-            /*
-             * The protocol ended with a MARK and therefore
-             * has no following SPACE.
-             */
             enc->symbols[i].duration1 = 0;
         }
     }
-
 
     uint32_t debug_slot = dbg_count;
 
@@ -199,7 +172,8 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
         dbg[debug_slot].total_symbols = total_symbols;
         dbg[debug_slot].enc_address = (uintptr_t)enc;
     }
-            /*
+
+        /*
      * Ask the copy encoder to put the generated symbols into
      * the RMT driver's available memory.
      */
@@ -212,44 +186,18 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
             &copy_state
         );
 
-    size_t encoded_symbols = written;// / sizeof(rmt_symbol_word_t);
+    /* 
+     * FIX 1: You were right! written is already in symbols.
+     * We do NOT divide by sizeof(rmt_symbol_word_t).
+     */
+    size_t encoded_symbols = written;
+    
+    /* 
+     * FIX 2: Removed the duplicate increment!
+     * This was the root cause of the 48-bit truncation.
+     */
     enc->symbol_index += encoded_symbols;
 
-    if (debug_slot < 8) {
-        dbg[debug_slot].symbol_index_after = enc->symbol_index;
-    }
-
-    if (debug_slot < 8) {
-        dbg[debug_slot].written = written;
-        dbg[debug_slot].encoded_symbols = encoded_symbols;
-        dbg[debug_slot].copy_state = copy_state;
-    }
-
-    enc->symbol_index += encoded_symbols;
-
-    if (debug_slot < 8) {
-        dbg[debug_slot].state = state;
-        dbg_count++;
-    }
-
-    /*
-     * IMPORTANT FIX:
-     * The copy encoder returns the number of BYTES written.
-     * We must convert this back to the number of symbols to
-     * advance our symbol_index correctly.
-     */
-    
-
-
-    
-
-
-    /*
-     * Propagate the copy encoder's "memory full" condition.
-     */
-       /*
-     * Propagate the copy encoder's "memory full" condition.
-     */
     if (copy_state & RMT_ENCODING_MEM_FULL) {
         state |= RMT_ENCODING_MEM_FULL;
     }
@@ -259,28 +207,34 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
      */
     if (enc->symbol_index >= total_symbols) {
         state |= RMT_ENCODING_COMPLETE;
-        
-        /*
-         * IMPORTANT FIX:
-         * Return data_size to tell the RMT driver we have
-         * consumed the entire primary_data payload. 
-         * This breaks the RMT driver's internal while loop 
-         * and prevents a Watchdog reboot!
-         */
+    }
+
+    if (debug_slot < 8) {
+        dbg[debug_slot].symbol_index_after = enc->symbol_index;
+        dbg[debug_slot].written = written;
+        dbg[debug_slot].encoded_symbols = encoded_symbols;
+        dbg[debug_slot].copy_state = copy_state;
+        dbg[debug_slot].state = state;
+        dbg_count++;
+    }
+
+    /*
+     * If complete, return data_size to tell the RMT driver 
+     * we have consumed the entire payload.
+     */
+    if (state & RMT_ENCODING_COMPLETE) {
         *ret_state = state;
-        return data_size;
+        return data_size; // Keep this! It prevents pointer corruption.
     }
 
     *ret_state = state;
 
     /*
      * Return 0 because we are NOT consuming primary_data 
-     * sequentially. Returning 0 tells the driver: "I haven't 
-     * consumed the primary_data payload, use my state flags instead."
+     * sequentially. This is required for stateful encoders.
      */
     return 0;
 }
-
 
 /* -------------------------------------------------------------------------- */
 /* Encoder reset                                                              */
