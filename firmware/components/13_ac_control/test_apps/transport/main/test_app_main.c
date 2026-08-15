@@ -270,8 +270,14 @@ static uint32_t extract_envelope(
         uint32_t ts =
             s_edge_ts_us[i];
 
-        bool last_edge =
-            (i == n - 1);
+        if (level != 0) {
+            continue;
+        }
+
+        /*
+         * Find the next edge after this falling edge.
+         */
+        bool last_edge = (i == n - 1);
 
         uint32_t next_gap = 0;
 
@@ -280,60 +286,76 @@ static uint32_t extract_envelope(
                 s_edge_ts_us[i + 1] - ts;
         }
 
-        bool boundary =
-            last_edge ||
-            (next_gap > CARRIER_GAP_THRESHOLD_US);
+        /*
+         * A large gap after a falling edge means:
+         *
+         *     carrier/mark ended
+         *     space follows
+         *
+         * Therefore this falling edge terminates one
+         * mark/space pair.
+         */
 
-        if (boundary && level == 0) {
+        if (!last_edge &&
+            next_gap > CARRIER_GAP_THRESHOLD_US) {
 
-            uint32_t mark_end_ts = ts;
+            printf(
+                "ENVELOPE_GAP symbol=%lu i=%lu gap=%lu\n",
+                (unsigned long)(duration_count / 2),
+                (unsigned long)i,
+                (unsigned long)next_gap
+            );
+        }
 
-            if (duration_count >= max_durations) {
-                printf("ENVELOPE_OVERFLOW=1\n");
-                return duration_count;
-            }
+       if (!last_edge &&
+            next_gap <= CARRIER_GAP_THRESHOLD_US) {
+            continue;
+        }
+
+        /*
+         * We have reached the end of a mark.
+         */
+        if (duration_count + 2 > max_durations) {
+            printf("ENVELOPE_OVERFLOW=1\n");
+            return duration_count;
+        }
+
+        uint32_t mark_end_ts = ts;
+
+        durations[duration_count++] =
+            (uint16_t)(mark_end_ts - mark_start_ts);
+
+        /*
+         * If there is another edge after the gap,
+         * that edge is the beginning of the next mark.
+         */
+        if (!last_edge) {
+
+            uint32_t next_mark_start_ts =
+                s_edge_ts_us[i + 1];
 
             durations[duration_count++] =
                 (uint16_t)(
-                    mark_end_ts - mark_start_ts
+                    next_mark_start_ts - mark_end_ts
                 );
 
-            if (last_edge) {
-
-                if (duration_count >= max_durations) {
-                    printf("ENVELOPE_OVERFLOW=1\n");
-                    return duration_count;
-                }
-
-                durations[duration_count++] =
-                    (uint16_t)(
-                        tx_done_ts_us - mark_end_ts
-                    );
-
-            } else {
-
-                uint32_t next_mark_start_ts =
-                    s_edge_ts_us[i + 1];
-
-                if (duration_count >= max_durations) {
-                    printf("ENVELOPE_OVERFLOW=1\n");
-                    return duration_count;
-                }
-
-                durations[duration_count++] =
-                    (uint16_t)(
-                        next_mark_start_ts - mark_end_ts
-                    );
-
-                mark_start_ts =
-                    next_mark_start_ts;
-            }
+            mark_start_ts =
+                next_mark_start_ts;
+        }
+        else {
+            /*
+             * Final space extends from the final falling
+             * edge until TX completion.
+             */
+            durations[duration_count++] =
+                (uint16_t)(
+                    tx_done_ts_us - mark_end_ts
+                );
         }
     }
 
     return duration_count;
 }
-
 
 /* ---------------------------------------------------------------------- */
 /* Compact waveform output                                                */
@@ -365,6 +387,41 @@ static void print_actual_durations(
     printf("\n");
 }
 
+
+
+///////////////////////////////
+
+static void dump_edge_summary(void)
+{
+    uint32_t count = s_edge_count;
+
+    printf("RAW_EDGE_SUMMARY_START\n");
+
+    printf("RAW_EDGE_COUNT=%u\n", (unsigned)count);
+
+    uint32_t first_count = count < 20 ? count : 20;
+
+    printf("RAW_EDGE_HEAD\n");
+    for (uint32_t i = 0; i < first_count; i++) {
+        printf("EDGE[%u]=%u,%u\n",
+               (unsigned)i,
+               (unsigned)s_edge_level[i],
+               (unsigned)s_edge_ts_us[i]);
+    }
+
+    printf("RAW_EDGE_TAIL\n");
+
+    uint32_t start = count > 20 ? count - 20 : 0;
+
+    for (uint32_t i = start; i < count; i++) {
+        printf("EDGE[%u]=%u,%u\n",
+               (unsigned)i,
+               (unsigned)s_edge_level[i],
+               (unsigned)s_edge_ts_us[i]);
+    }
+
+    printf("RAW_EDGE_SUMMARY_END\n");
+}
 
 /* ---------------------------------------------------------------------- */
 /* Execute one RUN                                                        */
@@ -407,6 +464,7 @@ static void run_test(void)
 
     esp_err_t ret =
         ac_ir_send(&frame);
+    //ac_ir_debug_dump_encoder();
 
     uint32_t tx_done_ts_us =
         (uint32_t)esp_timer_get_time();
@@ -414,6 +472,8 @@ static void run_test(void)
     /*
      * Stop capturing immediately after ac_ir_send() returns.
      */
+
+    dump_edge_summary();
     gpio_intr_disable(RX_GPIO);
 
     printf("AC_IR_TRANSPORT_TEST_TX_DONE\n");
@@ -467,6 +527,7 @@ static void run_test(void)
     }
 
     uint16_t actual_durations[MAX_TEST_DURATIONS];
+    
 
     uint32_t actual_count =
         extract_envelope(
@@ -486,6 +547,7 @@ static void run_test(void)
 
     gpio_intr_enable(RX_GPIO);
 }
+
 
 
 /* ---------------------------------------------------------------------- */
