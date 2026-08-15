@@ -29,6 +29,19 @@ Run:
 Timing tolerance is configurable via the AC_IR_TIMING_TOLERANCE_US
 env var (requirements.md section 11.3); default 20us.
 """
+"""
+Hardware verification test for the ac_ir RMT transport layer.
+
+The ESP test firmware:
+    1. Transmits the test waveform through the real ac_ir.c.
+    2. Captures the physical TX GPIO with an independent GPIO edge ISR.
+    3. Reconstructs the mark/space envelope on the ESP.
+    4. Prints the resulting duration sequence.
+
+This Python test only receives that compact reconstructed sequence and
+compares it with the expected waveform.
+"""
+
 import os
 import re
 
@@ -36,43 +49,148 @@ import pytest
 from pytest_embedded_idf.dut import IdfDut
 
 from expected_waveform import generate_expected_durations
-from waveform_parser import parse_edge_dump, extract_envelope, compare_waveform
-
-TIMING_TOLERANCE_US = int(os.environ.get('AC_IR_TIMING_TOLERANCE_US', '20'))
-
-_EDGE_DUMP_BLOCK_RE = re.compile(rb'(.*?)AC_IR_EDGE_DUMP_END', re.DOTALL)
+from waveform_parser import compare_waveform
 
 
-@pytest.mark.target('esp32c3')
-@pytest.mark.env('generic')
+TIMING_TOLERANCE_US = int(
+    os.environ.get("AC_IR_TIMING_TOLERANCE_US", "20")
+)
+
+
+@pytest.mark.target("esp32c3")
+@pytest.mark.env("generic")
 def test_ac_ir_transport_waveform(dut: IdfDut) -> None:
-    dut.expect_exact('AC_IR_TRANSPORT_TEST_START', timeout=30)
 
-    duration_count_match = dut.expect(re.compile(rb'DURATION_COUNT=(\d+)'), timeout=10)
-    assert int(duration_count_match.group(1)) == 112, 'unexpected DURATION_COUNT from firmware'
+    # ------------------------------------------------------------------
+    # Test start / configuration
+    # ------------------------------------------------------------------
 
-    symbol_count_match = dut.expect(re.compile(rb'EXPECTED_SYMBOL_COUNT=(\d+)'), timeout=10)
-    assert int(symbol_count_match.group(1)) == 56, 'unexpected EXPECTED_SYMBOL_COUNT from firmware'
-
-    dut.expect_exact('AC_IR_TRANSPORT_TEST_TX_DONE', timeout=10)
-
-    # Read the entire edge-dump block in one go rather than line-by-line;
-    # this can be several thousand lines for the primary test frame.
-    dut.expect_exact('AC_IR_EDGE_DUMP_START', timeout=10)
-    block_match = dut.expect(_EDGE_DUMP_BLOCK_RE, timeout=60)
-    raw_block = block_match.group(1).decode('utf-8', errors='replace')
-
-    dut.expect_exact('AC_IR_TRANSPORT_TEST_END', timeout=10)
-
-    dump = parse_edge_dump(raw_block)
-
-    assert not dump.overflow, (
-        'edge capture buffer overflowed on-device -- the test harness '
-        'itself lost data (see MAX_EDGES in main/test_app_main.c); this capture '
-        'cannot be trusted and must not be used to judge ac_ir.c'
+    dut.expect_exact(
+        "AC_IR_TRANSPORT_TEST_START",
+        timeout=30,
     )
 
-    actual_durations = extract_envelope(dump)
+    duration_count_match = dut.expect(
+        re.compile(rb"DURATION_COUNT=(\d+)"),
+        timeout=10,
+    )
+
+    expected_duration_count = int(
+        duration_count_match.group(1)
+    )
+
+    assert expected_duration_count == 112, (
+        "unexpected DURATION_COUNT from firmware: "
+        f"{expected_duration_count}"
+    )
+
+    symbol_count_match = dut.expect(
+        re.compile(rb"EXPECTED_SYMBOL_COUNT=(\d+)"),
+        timeout=10,
+    )
+
+    expected_symbol_count = int(
+        symbol_count_match.group(1)
+    )
+
+    assert expected_symbol_count == 56, (
+        "unexpected EXPECTED_SYMBOL_COUNT from firmware: "
+        f"{expected_symbol_count}"
+    )
+
+    # ------------------------------------------------------------------
+    # Wait for physical TX to finish
+    # ------------------------------------------------------------------
+
+    dut.expect_exact(
+        "AC_IR_TRANSPORT_TEST_TX_DONE",
+        timeout=10,
+    )
+
+    # ------------------------------------------------------------------
+    # Check capture integrity
+    # ------------------------------------------------------------------
+
+    edge_count_match = dut.expect(
+        re.compile(rb"EDGE_COUNT=(\d+)"),
+        timeout=10,
+    )
+
+    edge_count = int(edge_count_match.group(1))
+
+    overflow_match = dut.expect(
+        re.compile(rb"EDGE_OVERFLOW=([01])"),
+        timeout=10,
+    )
+
+    edge_overflow = overflow_match.group(1) == b"1"
+
+    assert not edge_overflow, (
+        "edge capture buffer overflowed on-device; "
+        f"EDGE_COUNT={edge_count}. "
+        "The physical capture cannot be trusted."
+    )
+
+    # TX_DONE_TS_US is diagnostic information. Read it so the serial
+    # protocol stays explicit, although Python does not need it.
+    dut.expect(
+        re.compile(rb"TX_DONE_TS_US=(\d+)"),
+        timeout=10,
+    )
+
+    # ------------------------------------------------------------------
+    # Receive reconstructed waveform
+    # ------------------------------------------------------------------
+
+    actual_count_match = dut.expect(
+        re.compile(rb"ACTUAL_DURATION_COUNT=(\d+)"),
+        timeout=10,
+    )
+
+    actual_count = int(
+        actual_count_match.group(1)
+    )
+
+    durations_match = dut.expect(
+        re.compile(rb"ACTUAL_DURATIONS=([0-9,]+)"),
+        timeout=10,
+    )
+
+    actual_durations = [
+        int(value)
+        for value in durations_match.group(1).split(b",")
+    ]
+
+    assert len(actual_durations) == actual_count, (
+        "firmware duration count does not match "
+        f"the number of printed durations: "
+        f"count={actual_count}, "
+        f"parsed={len(actual_durations)}"
+    )
+
+    # ------------------------------------------------------------------
+    # End of firmware test
+    # ------------------------------------------------------------------
+
+    dut.expect_exact(
+        "AC_IR_TRANSPORT_TEST_END",
+        timeout=10,
+    )
+
+    # ------------------------------------------------------------------
+    # Compare against expected waveform
+    # ------------------------------------------------------------------
+
     expected_durations = generate_expected_durations()
 
-    compare_waveform(expected_durations, actual_durations, TIMING_TOLERANCE_US)
+    assert actual_count == expected_duration_count, (
+        "FAILED: duration count mismatch\n\n"
+        f"Expected: {expected_duration_count}\n"
+        f"Actual:   {actual_count}"
+    )
+
+    compare_waveform(
+        expected_durations,
+        actual_durations,
+        TIMING_TOLERANCE_US,
+    )
