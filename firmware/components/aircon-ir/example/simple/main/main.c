@@ -2,7 +2,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_system.h"
+
 
 
 static const char *TAG = "app";
@@ -57,7 +57,7 @@ void app_main(void)
     command.temperature = 22;
     command.fan = AC_FAN_MEDIUM;
 
-   // ret = ac_set_operation(&command);
+    ret = ac_set_operation(&command);
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to change AC operation: %s",
@@ -65,12 +65,7 @@ void app_main(void)
         return;
     }
 
-    /*
-     * Switch the AC off.
-     *
-     * This preserves the other settings internally.
-     */
-    //ret = ac_switch_off();
+    
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to switch AC off: %s",
