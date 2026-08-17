@@ -1,0 +1,19 @@
+menu "AC Control"
+
+    choice AC_PROTOCOL
+        prompt "AC IR Protocol"
+        default AC_PROTOCOL_MIDEA
+        help
+            Select which air conditioner protocol to compile support for.
+
+        config AC_PROTOCOL_MIDEA
+            bool "Midea"
+
+        config AC_PROTOCOL_GREE
+            bool "Gree"
+
+        config AC_PROTOCOL_HAIER
+            bool "Haier"
+    endchoice
+
+endmenu
