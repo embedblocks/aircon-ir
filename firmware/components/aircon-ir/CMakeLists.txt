@@ -13,7 +13,7 @@ idf_component_register(
     INCLUDE_DIRS
         "include"
 
-    INCLUDE_DIRS
+    PRIV_INCLUDE_DIRS
         "src"
 
     PRIV_REQUIRES
