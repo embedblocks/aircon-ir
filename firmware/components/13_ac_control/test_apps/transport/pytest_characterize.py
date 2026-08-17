@@ -212,6 +212,8 @@ def run_one_shape(
         [
             int(value)
             for value in raw.split(b",")
+            if value.strip()
+
         ]
         if raw
         else []
@@ -269,8 +271,16 @@ def run_one_shape(
     # Compare physical waveform
     # --------------------------------------------------------------
 
-    try:
+    if len(actual_durations) != len(shape["expected"]):
+        return (
+            "COUNT_MISMATCH",
+            (
+                f"Expected {len(shape['expected'])} durations, "
+                f"got {len(actual_durations)}"
+            ),
+        )
 
+    try:
         compare_waveform(
             shape["expected"],
             actual_durations,
@@ -278,12 +288,15 @@ def run_one_shape(
         )
 
     except AssertionError as exc:
-
         return (
-            "WAVEFORM_MISMATCH",
+            "TIMING_MISMATCH",
             str(exc),
         )
 
+    return (
+        "PASS",
+        f"{len(actual_durations)} durations received",
+    )
     return (
         "PASS",
         (

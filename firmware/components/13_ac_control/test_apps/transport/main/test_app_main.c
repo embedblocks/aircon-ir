@@ -236,127 +236,44 @@ static void process_load_command(char *line)
 /* ---------------------------------------------------------------------- */
 /* Envelope extraction                                                    */
 /* ---------------------------------------------------------------------- */
-
-static uint32_t extract_envelope(
-    uint32_t tx_done_ts_us,
+static uint32_t extract_durations(
+    uint16_t final_duration_us,
     uint16_t *durations,
     uint32_t max_durations)
 {
     uint32_t n = s_edge_count;
 
-    if (n == 0) {
+    if (n < 2 || s_edge_level[0] != 1) {
         return 0;
     }
 
-    if (s_edge_level[0] != 1) {
-        printf("ENVELOPE_ERROR=FIRST_EDGE_NOT_RISING\n");
-        printf(
-            "FIRST_EDGE_LEVEL=%u\n",
-            (unsigned)s_edge_level[0]
-        );
-        return 0;
-    }
+    uint32_t count = 0;
 
-    uint32_t duration_count = 0;
+    /* All measurable edge-to-edge durations */
+    for (uint32_t i = 0; i + 1 < n; i++) {
 
-    uint32_t mark_start_ts =
-        s_edge_ts_us[0];
-
-    for (uint32_t i = 0; i < n; i++) {
-
-        uint8_t level =
-            s_edge_level[i];
-
-        uint32_t ts =
-            s_edge_ts_us[i];
-
-        if (level != 0) {
-            continue;
+        if (count >= max_durations) {
+            break;
         }
 
-        /*
-         * Find the next edge after this falling edge.
-         */
-        bool last_edge = (i == n - 1);
-
-        uint32_t next_gap = 0;
-
-        if (!last_edge) {
-            next_gap =
-                s_edge_ts_us[i + 1] - ts;
-        }
-
-        /*
-         * A large gap after a falling edge means:
-         *
-         *     carrier/mark ended
-         *     space follows
-         *
-         * Therefore this falling edge terminates one
-         * mark/space pair.
-         */
-
-        if (!last_edge &&
-            next_gap > CARRIER_GAP_THRESHOLD_US) {
-
-            printf(
-                "ENVELOPE_GAP symbol=%lu i=%lu gap=%lu\n",
-                (unsigned long)(duration_count / 2),
-                (unsigned long)i,
-                (unsigned long)next_gap
+        durations[count++] =
+            (uint16_t)(
+                s_edge_ts_us[i + 1] -
+                s_edge_ts_us[i]
             );
-        }
-
-       if (!last_edge &&
-            next_gap <= CARRIER_GAP_THRESHOLD_US) {
-            continue;
-        }
-
-        /*
-         * We have reached the end of a mark.
-         */
-        if (duration_count + 2 > max_durations) {
-            printf("ENVELOPE_OVERFLOW=1\n");
-            return duration_count;
-        }
-
-        uint32_t mark_end_ts = ts;
-
-        durations[duration_count++] =
-            (uint16_t)(mark_end_ts - mark_start_ts);
-
-        /*
-         * If there is another edge after the gap,
-         * that edge is the beginning of the next mark.
-         */
-        if (!last_edge) {
-
-            uint32_t next_mark_start_ts =
-                s_edge_ts_us[i + 1];
-
-            durations[duration_count++] =
-                (uint16_t)(
-                    next_mark_start_ts - mark_end_ts
-                );
-
-            mark_start_ts =
-                next_mark_start_ts;
-        }
-        else {
-            /*
-             * Final space extends from the final falling
-             * edge until TX completion.
-             */
-            durations[duration_count++] =
-                (uint16_t)(
-                    tx_done_ts_us - mark_end_ts
-                );
-        }
     }
 
-    return duration_count;
-}
+    /*
+     * No GPIO edge marks the end of the final space.
+     * Therefore append the duration programmed into
+     * the final RMT symbol.
+     */
+    if (count < max_durations) {
+        durations[count++] = final_duration_us;
+    }
 
+    return count;
+}
 /* ---------------------------------------------------------------------- */
 /* Compact waveform output                                                */
 /* ---------------------------------------------------------------------- */
@@ -530,7 +447,7 @@ static void run_test(void)
     
 
     uint32_t actual_count =
-        extract_envelope(
+        extract_durations(
             tx_done_ts_us,
             actual_durations,
             MAX_TEST_DURATIONS
