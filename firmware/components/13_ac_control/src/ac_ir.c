@@ -5,7 +5,8 @@
 #include "driver/rmt_tx.h"
 #include "esp_check.h"
 #include "esp_log.h"
-
+#include <string.h>
+#include "driver/gpio.h"
 #define TAG "ac_ir"
 
 #define AC_IR_TX_GPIO           10
@@ -20,7 +21,7 @@
  * The ESP32-C3 RMT memory is limited, so the custom encoder
  * generates a small batch and lets the RMT driver consume it.
  */
-#define AC_IR_ENCODER_SYMBOLS   32
+#define AC_IR_ENCODER_SYMBOLS   48
 
 
 typedef struct {
@@ -69,11 +70,20 @@ typedef struct {
     uint32_t copy_state;
     uint32_t state;
     uintptr_t enc_address;
+    uint8_t memfull;
+    uint8_t en_complete;
+    uint8_t return_n;
+
+    uint16_t d0[4];
+    uint16_t d1[4];
 } encode_debug_t;
 
 static volatile encode_debug_t dbg[8];
 static volatile uint32_t dbg_count = 0;
 static volatile uint32_t dbg_encode_calls = 0;
+
+
+
 /* -------------------------------------------------------------------------- */
 /* Custom RMT encoder                                                        */
 /* -------------------------------------------------------------------------- */
@@ -97,6 +107,9 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     size_t data_size,
     rmt_encode_state_t *ret_state)
 {
+
+    dbg_encode_calls++;
+
     ac_ir_encoder_t *enc = __containerof(encoder, ac_ir_encoder_t, base);
     const ac_ir_frame_t *frame = (const ac_ir_frame_t *)primary_data;
 
@@ -138,6 +151,9 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
         }
     }
 
+    
+    size_t before = enc->symbol_index;
+
     size_t written = enc->copy_encoder->encode(
         enc->copy_encoder,
         channel,
@@ -147,29 +163,68 @@ static size_t IRAM_ATTR ac_ir_encoder_encode(
     );
 
     /* 
-     * ROOT CAUSE FIX: written is in BYTES. We must divide by 
-     * sizeof(rmt_symbol_word_t) to get the number of symbols.
+     * FINAL FIX: 'written' is ALREADY in RMT symbols.
+     * DO NOT divide by sizeof(rmt_symbol_word_t) here! 
+     * Dividing it caused the infinite loop and 306-bit garbage frame.
      */
-    size_t encoded_symbols = written / sizeof(rmt_symbol_word_t);
+    size_t encoded_symbols = written;// / sizeof(rmt_symbol_word_t);
     enc->symbol_index += encoded_symbols;
 
+
+    
+
     if (copy_state & RMT_ENCODING_MEM_FULL) {
+        dbg[dbg_count].memfull = 1;
         state |= RMT_ENCODING_MEM_FULL;
     }
 
     if (enc->symbol_index >= total_symbols) {
+        dbg[dbg_count].en_complete = 1;
         state |= RMT_ENCODING_COMPLETE;
     }
 
+
+    //toggle the debug gpio
+    gpio_set_level(4,!gpio_get_level(4));
+
+
+    if (dbg_count < 8) {
+        dbg[dbg_count].symbol_index_before = before;
+        dbg[dbg_count].symbol_index_after = enc->symbol_index;
+        dbg[dbg_count].symbol_count = symbol_count;
+        dbg[dbg_count].total_symbols = total_symbols;
+        dbg[dbg_count].written = written;
+        dbg[dbg_count].encoded_symbols = encoded_symbols;
+        dbg[dbg_count].copy_state = copy_state;
+        dbg[dbg_count].state = 0;   // fill after state calculation if desired
+        dbg[dbg_count].enc_address = (uintptr_t)enc;
+
+        if (dbg_count < 8) {
+    
+            for (int i = 0; i < 4 && i < symbol_count; i++) {
+                dbg[dbg_count].d0[i] = enc->symbols[i].duration0;
+                dbg[dbg_count].d1[i] = enc->symbols[i].duration1;
+            }
+        }
+
+        dbg_count++;
+    }
+
+
+
+
+
     if (state & RMT_ENCODING_COMPLETE) {
+        dbg[dbg_count-1].return_n=1;
         *ret_state = state;
-        return data_size;
+        return data_size; 
+
+
     }
 
     *ret_state = state;
     return 0;
 }
-/* Encoder reset                                                              */
 /* -------------------------------------------------------------------------- */
 
 static esp_err_t IRAM_ATTR ac_ir_encoder_reset(
@@ -290,6 +345,36 @@ esp_err_t ac_ir_init(void)
         return ESP_OK;
     }
 
+    //For debugging will toggle on each ir transaction
+       gpio_config_t io_conf_dbg1 = {
+        .pin_bit_mask = 1ULL << 4,
+        .mode = GPIO_MODE_INPUT_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(
+        gpio_config(&io_conf_dbg1)
+    );
+
+    gpio_config_t io_conf_dbg2 = {
+        .pin_bit_mask = 1ULL << 3,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(
+        gpio_config(&io_conf_dbg2)
+    );
+
+    //Changed here and also toggled in encode cb
+    gpio_set_level(4,0);
+    //changed here only Juist to confirm which settings are applied here
+    gpio_set_level(3,0);
+
 
     rmt_tx_channel_config_t tx_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
@@ -309,7 +394,7 @@ esp_err_t ac_ir_init(void)
          * The encoder handles frames larger than this by
          * continuing over multiple encode() calls.
          */
-        .mem_block_symbols = 48,
+        .mem_block_symbols = 80,
 
         .trans_queue_depth = 1,
 
@@ -348,11 +433,15 @@ esp_err_t ac_ir_init(void)
     };
 
 
+ 
+    
+    /*
     ret =
         rmt_apply_carrier(
             s_tx_channel,
             &carrier_config
         );
+    */
 
     if (ret != ESP_OK) {
 
@@ -446,7 +535,12 @@ esp_err_t ac_ir_send(
     }
 
 
-
+    //memset(dbg, 0, sizeof(dbg)*8);
+    dbg_count = 0;
+    dbg_encode_calls = 0;
+    //memfull=0;
+    //en_complete=0;
+    //return_n=0;
    
 
     if (s_tx_channel == NULL ||
@@ -458,6 +552,7 @@ esp_err_t ac_ir_send(
 
     ESP_LOGI(TAG, "count=%u", frame->count);
 
+    
     for (size_t i = 0; i < frame->count; i++) {
         ESP_LOGI(TAG, "duration[%u] = %u",
                 (unsigned)i,
@@ -502,14 +597,14 @@ esp_err_t ac_ir_send(
     
     esp_err_t rett= rmt_tx_wait_all_done(
         s_tx_channel,
-        1000
+        5000
     );
 
-    ESP_LOGI(TAG, "=== ENCODER TRACE ===");
+    ESP_LOGI(TAG, "=== ENCODER TRACE === %d",dbg_count);
 
         for (uint32_t i = 0; i < dbg_count && i < 8; i++) {
             ESP_LOGI(TAG,
-                    "call[%u]: enc=%p before=%u count=%u total=%u written=%u encoded=%u after=%u copy=0x%x state=0x%x",
+                    "call[%u]: enc=%p before=%u count=%u total=%u ,written=%u encoded=%u after=%u copy=0x%x state=0x%x, memfull %d, en_complete %d, return_n %d",
                     i,
                     (void *)dbg[i].enc_address,
                     dbg[i].symbol_index_before,
@@ -519,7 +614,11 @@ esp_err_t ac_ir_send(
                     dbg[i].encoded_symbols,
                     dbg[i].symbol_index_after,
                     dbg[i].copy_state,
-                    dbg[i].state);
+                    dbg[i].state,
+                    dbg[i].memfull,
+                    dbg[i].en_complete, 
+                    dbg[i].return_n);
+
         }
 
     ESP_LOGI(TAG, "ENCODER CALL COUNT = %u",
@@ -528,3 +627,5 @@ esp_err_t ac_ir_send(
     return rett;
 
 }
+
+
