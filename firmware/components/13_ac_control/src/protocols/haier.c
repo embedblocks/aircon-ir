@@ -88,7 +88,7 @@
 
 static uint8_t haier_state[HAIER_STATE_BYTES];
 
-static uint16_t haier_durations[
+static uint32_t haier_durations[
     HAIER_IR_FRAME_MAX_DURATIONS
 ];
 
@@ -99,7 +99,7 @@ static uint16_t haier_durations[
 
 static esp_err_t haier_push(
     ac_ir_frame_t *frame,
-    uint16_t duration)
+    uint32_t duration)
 {
     if (frame->count >= HAIER_IR_FRAME_MAX_DURATIONS) {
         return ESP_ERR_NO_MEM;
@@ -113,8 +113,8 @@ static esp_err_t haier_push(
 
 static esp_err_t haier_push_pair(
     ac_ir_frame_t *frame,
-    uint16_t mark,
-    uint16_t space)
+    uint32_t mark,
+    uint32_t space)
 {
     esp_err_t ret;
 
@@ -366,13 +366,12 @@ static esp_err_t haier_build_state(
 
     /*
      * Byte 12:
-     *
-     * Button = low five bits.
-     *
-     * For a complete operation command, Power is the safest
-     * representative command.
+     
+     * Byte 12: Button command.
+     * FIX: Use TEMP_UP (0x00) instead of POWER (0x05) so the AC unit
+     * updates its state without toggling power.
      */
-    haier_state[12] = HAIER_BUTTON_POWER;
+    haier_state[12] = HAIER_BUTTON_TEMP_UP;
 
 
     /*

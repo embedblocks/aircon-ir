@@ -15,6 +15,20 @@
 #define AC_IR_CARRIER_FREQ_HZ  38000
 #define AC_IR_CARRIER_DUTY     0.33f
 
+/*
+ * An individual RMT duration field is only 15 bits wide, even though
+ * rmt_symbol_word_t itself is 32 bits (duration0:15, level0:1,
+ * duration1:15, level1:1). Any logical protocol duration longer than
+ * this must be split into multiple consecutive RMT duration fields
+ * that share the same level.
+ *
+ * NOTE: ac_ir_frame_t.durations must be `const uint32_t *` (not
+ * uint16_t) in ac_ir.h for logical durations longer than this limit
+ * to survive intact from the protocol layer (gree.c / haier.c / etc.)
+ * down to this file. This file assumes that change has been made.
+ */
+#define AC_IR_MAX_RMT_DURATION   32767
+
 
 /* -------------------------------------------------------------------------- */
 /* Module state                                                               */
@@ -39,6 +53,111 @@ static volatile uint32_t dbg_encode_calls = 0;
 
 
 /* -------------------------------------------------------------------------- */
+/* Logical duration -> RMT half-duration expansion                            */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Logical durations (frame->durations[]) alternate level starting with
+ * mark (HIGH) at index 0:
+ *
+ *   durations[0] -> mark  (level 1)
+ *   durations[1] -> space (level 0)
+ *   durations[2] -> mark  (level 1)
+ *   ...
+ *
+ * Each logical duration expands to ceil(duration / AC_IR_MAX_RMT_DURATION)
+ * RMT "half-durations" (all at the same level as the logical duration
+ * they came from). A duration of exactly 0 still counts as one
+ * half-duration, matching the previous behavior. Two consecutive
+ * half-durations are packed into one rmt_symbol_word_t.
+ *
+ * Returns the total number of half-durations for the whole frame.
+ */
+static size_t ac_ir_count_half_durations(const ac_ir_frame_t *frame)
+{
+    size_t total = 0;
+
+    for (size_t j = 0; j < frame->count; j++) {
+        uint32_t d = frame->durations[j];
+
+        if (d == 0) {
+            total += 1;
+        } else {
+            total += (d + AC_IR_MAX_RMT_DURATION - 1) / AC_IR_MAX_RMT_DURATION;
+        }
+    }
+
+    return total;
+}
+
+/*
+ * Walk the logical durations, splitting any duration longer than
+ * AC_IR_MAX_RMT_DURATION into multiple same-level half-durations, and
+ * write only the half-durations falling within [half_start, half_end)
+ * into `symbols[]` (relative to half_start).
+ *
+ * `symbols[]` must already point at a buffer large enough for
+ * ((half_end - half_start) + 1) / 2 entries, and should be zeroed
+ * beforehand -- if (half_end - half_start) is odd, the last symbol's
+ * duration1/level1 are intentionally left as whatever the caller
+ * pre-set (normally 0), matching the original odd-total padding
+ * behavior.
+ *
+ * This recomputes/re-walks from the start of the frame on every call
+ * (Option A from the diagnosis: no persistent expansion state). IR
+ * frames are small, so this is cheap and avoids introducing another
+ * state machine that could desync the way the old copy-encoder did.
+ */
+static void ac_ir_emit_half_durations(
+    const ac_ir_frame_t *frame,
+    size_t half_start,
+    size_t half_end,
+    rmt_symbol_word_t *symbols)
+{
+    size_t half_index = 0;
+
+    for (size_t j = 0; j < frame->count && half_index < half_end; j++) {
+        uint8_t level = (j % 2 == 0) ? 1 : 0;
+        uint32_t d = frame->durations[j];
+
+        if (d == 0) {
+            if (half_index >= half_start) {
+                size_t rel = half_index - half_start;
+                if ((rel & 1) == 0) {
+                    symbols[rel / 2].level0 = level;
+                    symbols[rel / 2].duration0 = 0;
+                } else {
+                    symbols[rel / 2].level1 = level;
+                    symbols[rel / 2].duration1 = 0;
+                }
+            }
+            half_index++;
+            continue;
+        }
+
+        while (d > 0 && half_index < half_end) {
+            uint32_t chunk =
+                (d > AC_IR_MAX_RMT_DURATION) ? AC_IR_MAX_RMT_DURATION : d;
+
+            if (half_index >= half_start) {
+                size_t rel = half_index - half_start;
+                if ((rel & 1) == 0) {
+                    symbols[rel / 2].level0 = level;
+                    symbols[rel / 2].duration0 = (uint16_t)chunk;
+                } else {
+                    symbols[rel / 2].level1 = level;
+                    symbols[rel / 2].duration1 = (uint16_t)chunk;
+                }
+            }
+
+            d -= chunk;
+            half_index++;
+        }
+    }
+}
+
+
+/* -------------------------------------------------------------------------- */
 /* Simple RMT encoder callback                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -48,16 +167,15 @@ static volatile uint32_t dbg_encode_calls = 0;
  * logical stream we already are (`symbols_written`). We write directly
  * into that buffer.
  *
- * There is no local scratch buffer and no stateful child (copy) encoder
- * here, so there is nothing that can be overwritten out from under a
- * child encoder's internal position -- the bug that caused the
- * "correct -> garbage -> correct" pattern in the previous implementation
- * cannot occur with this architecture.
+ * Two independent kinds of "splitting" happen here, and they must not
+ * be conflated:
  *
- * symbol 0 -> durations[0], durations[1]
- * symbol 1 -> durations[2], durations[3]
- * symbol 2 -> durations[4], durations[5]
- * ...
+ *   1. A single logical duration longer than AC_IR_MAX_RMT_DURATION is
+ *      split into multiple RMT half-durations (this file's job).
+ *   2. The whole frame may need more RMT symbols than fit in
+ *      mem_block_symbols at once, so the driver calls this callback
+ *      multiple times as memory frees up (symbols_free/symbols_written
+ *      handles this; unrelated to point 1).
  */
 static size_t IRAM_ATTR ac_ir_simple_encode_cb(
     const void *data,
@@ -78,7 +196,8 @@ static size_t IRAM_ATTR ac_ir_simple_encode_cb(
         return 0;
     }
 
-    size_t total_symbols = (frame->count + 1) / 2;
+    size_t total_half = ac_ir_count_half_durations(frame);
+    size_t total_symbols = (total_half + 1) / 2;
 
     if (symbols_written >= total_symbols) {
         *done = true;
@@ -102,20 +221,15 @@ static size_t IRAM_ATTR ac_ir_simple_encode_cb(
         return 0;
     }
 
-    for (size_t i = 0; i < to_write; i++) {
-        size_t symbol_index = symbols_written + i;
-        size_t duration_index = symbol_index * 2;
+    memset(symbols, 0, to_write * sizeof(rmt_symbol_word_t));
 
-        symbols[i].level0 = 1;
-        symbols[i].duration0 = frame->durations[duration_index];
-
-        symbols[i].level1 = 0;
-        if ((duration_index + 1) < frame->count) {
-            symbols[i].duration1 = frame->durations[duration_index + 1];
-        } else {
-            symbols[i].duration1 = 0;
-        }
+    size_t half_start = symbols_written * 2;
+    size_t half_end = half_start + to_write * 2;
+    if (half_end > total_half) {
+        half_end = total_half;
     }
+
+    ac_ir_emit_half_durations(frame, half_start, half_end, symbols);
 
     bool finished = (symbols_written + to_write >= total_symbols);
     *done = finished;
@@ -220,6 +334,8 @@ esp_err_t ac_ir_init(void)
          * The simple encoder callback handles frames larger than this
          * by generating only as many symbols as the driver reports
          * free on each invocation, across multiple callback calls.
+         * This is independent of the long-duration splitting done in
+         * ac_ir_emit_half_durations().
          */
         .mem_block_symbols = 80,
 
@@ -376,7 +492,7 @@ esp_err_t ac_ir_send(
     for (size_t i = 0; i < frame->count; i++) {
         ESP_LOGI(TAG, "duration[%u] = %u",
                 (unsigned)i,
-                frame->durations[i]);
+                (unsigned)frame->durations[i]);
     }
     /*
      * One-shot transmission.

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define MIDEA_FRAME_MAX_DURATIONS 200
+#define MIDEA_FRAME_MAX_DURATIONS 500
 
 #define MIDEA_TEMP_LOW             17
 #define MIDEA_TEMP_HIGH            30
@@ -120,7 +120,7 @@ static const uint8_t fan_table[] = {
 /* Protocol state                                                             */
 /* -------------------------------------------------------------------------- */
 
-static uint16_t midea_durations[MIDEA_FRAME_MAX_DURATIONS];
+static uint32_t midea_durations[MIDEA_FRAME_MAX_DURATIONS];
 
 
 /* -------------------------------------------------------------------------- */
@@ -129,7 +129,7 @@ static uint16_t midea_durations[MIDEA_FRAME_MAX_DURATIONS];
 
 static esp_err_t midea_push(
     ac_ir_frame_t *frame,
-    uint16_t duration)
+    uint32_t duration)
 {
     if (frame->count >= MIDEA_FRAME_MAX_DURATIONS) {
         return ESP_ERR_NO_MEM;
@@ -143,8 +143,8 @@ static esp_err_t midea_push(
 
 static esp_err_t midea_push_pair(
     ac_ir_frame_t *frame,
-    uint16_t mark,
-    uint16_t space)
+    uint32_t mark,
+    uint32_t space)
 {
     esp_err_t ret;
 
