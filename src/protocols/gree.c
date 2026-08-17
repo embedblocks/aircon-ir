@@ -5,7 +5,14 @@
 #include <string.h>
 
 #define GREE_STATE_BYTES              8
-#define GREE_IR_FRAME_MAX_DURATIONS   160
+/*
+ * One frame = header(2) + block1(32 data bits * 2 + 3 footer bits * 2 + trailing pair 2)
+ *           + block2(32 data bits * 2 + trailing pair 2)
+ *           = 2 + 70 + 6 + 2 + 64 + 2 = 146 durations.
+ * The real remote sends the whole frame twice (see rawData below), so we
+ * need room for ~292 durations. Round up with headroom.
+ */
+#define GREE_IR_FRAME_MAX_DURATIONS   320
 
 /*
  * Gree IR protocol.
@@ -29,7 +36,10 @@
 #define GREE_BIT_MARK          620
 #define GREE_ZERO_SPACE        540
 #define GREE_ONE_SPACE         1600
-#define GREE_MESSAGE_SPACE     20000
+/* Gap between block 1 (bytes 0..3) and block 2 (bytes 4..7) within one frame. */
+#define GREE_MIDDLE_GAP        20000
+/* Gap after block 2, before the whole frame repeats (or before silence). */
+#define GREE_FINAL_GAP         40000
 
 #define GREE_MIN_TEMP          16
 #define GREE_MAX_TEMP          30
@@ -359,16 +369,44 @@ static esp_err_t gree_build_state(
 /* -------------------------------------------------------------------------- */
 
 /*
- * Push a single block: header + 4 bytes (LSB first) + "010" footer + gap.
- *
- * The "010" footer is three literal bits followed by a trailing mark
- * and the inter-block / final gap.
+ * Push 4 data bytes (LSB first) followed by a trailing mark and a gap.
+ * This is the shape shared by both blocks; whether a "010" footer
+ * precedes the trailing mark differs between block 1 and block 2
+ * (see gree_build_frame()).
  */
-static esp_err_t gree_push_block(
+static esp_err_t gree_push_data_bytes(
     ac_ir_frame_t *frame,
     const uint8_t *bytes)
 {
-    /* Header */
+    for (size_t i = 0; i < 4; i++) {
+        esp_err_t ret = gree_push_byte_lsb(frame, bytes[i]);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+    return ESP_OK;
+}
+
+/*
+ * Build one full Gree frame into the given ac_ir_frame_t:
+ *
+ *   header
+ *   + bytes 0..3 (LSB first)          [block 1]
+ *   + "010" footer (3 bits)
+ *   + trailing mark + GREE_MIDDLE_GAP
+ *   + bytes 4..7 (LSB first)          [block 2]
+ *   + trailing mark + GREE_FINAL_GAP
+ *
+ * Confirmed against the captured waveform: there is exactly ONE header
+ * for the whole 8-byte state, and only block 1 carries the "010" footer.
+ * Block 2 has no header and no footer of its own.
+ */
+static esp_err_t gree_build_frame(ac_ir_frame_t *frame)
+{
+    frame->durations = gree_durations;
+    frame->count = 0;
+
+    /* Single header for the whole frame */
     esp_err_t ret = gree_push_pair(
         frame,
         GREE_HEADER_MARK,
@@ -377,56 +415,46 @@ static esp_err_t gree_push_block(
         return ret;
     }
 
-    /* 4 data bytes, LSB first */
-    for (size_t i = 0; i < 4; i++) {
-        ret = gree_push_byte_lsb(frame, bytes[i]);
-        if (ret != ESP_OK) {
-            return ret;
-        }
-    }
-
-    /*
-     * Footer "010" (3 bits) + trailing mark + gap.
-     *
-     *   bit 0 -> mark + zero_space
-     *   bit 1 -> mark + one_space
-     *   bit 0 -> mark + zero_space
-     *   trailing mark + message_space
-     */
-    ret = gree_push_bit(frame, 0);
+    /* Block 1: bytes 0..3 */
+    ret = gree_push_data_bytes(frame, &gree_state[0]);
     if (ret != ESP_OK) {
         return ret;
     }
 
+    /* Footer "010" (3 bits) - belongs to block 1 only */
+    ret = gree_push_bit(frame, 0);
+    if (ret != ESP_OK) {
+        return ret;
+    }
     ret = gree_push_bit(frame, 1);
     if (ret != ESP_OK) {
         return ret;
     }
-
     ret = gree_push_bit(frame, 0);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    return gree_push_pair(
+    /* Trailing mark + gap before block 2 */
+    ret = gree_push_pair(
         frame,
         GREE_BIT_MARK,
-        GREE_MESSAGE_SPACE);
-}
-
-static esp_err_t gree_build_frame(ac_ir_frame_t *frame)
-{
-    frame->durations = gree_durations;
-    frame->count = 0;
-
-    /* Block 1: header + bytes 0..3 + "010" + gap */
-    esp_err_t ret = gree_push_block(frame, &gree_state[0]);
+        GREE_MIDDLE_GAP);
     if (ret != ESP_OK) {
         return ret;
     }
 
-    /* Block 2: header + bytes 4..7 + "010" + gap */
-    return gree_push_block(frame, &gree_state[4]);
+    /* Block 2: bytes 4..7 - no header, no footer */
+    ret = gree_push_data_bytes(frame, &gree_state[4]);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    /* Trailing mark + final gap */
+    return gree_push_pair(
+        frame,
+        GREE_BIT_MARK,
+        GREE_FINAL_GAP);
 }
 
 
@@ -453,13 +481,28 @@ static esp_err_t gree_encode(
         return ret;
     }
 
-    
+    ret = gree_build_frame(frame);
+    if (ret != ESP_OK) {
+        return ret;
+    }
 
-    frame->durations = rawData;
-    frame->count = sizeof(rawData) / sizeof(rawData[0]);
+    /*
+     * The captured remote transmits the whole frame twice
+     * (see "FRAME 2" in rawData above). Repeat it here, the
+     * same way midea.c repeats its frame.
+     */
+    size_t first_frame_count = frame->count;
+    for (size_t i = 0; i < first_frame_count; i++) {
+        ret = gree_push(frame, frame->durations[i]);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    frame->durations=rawData;
+    frame->count=sizeof(rawData)/sizeof(rawData[0]);
 
     return ESP_OK;
-    //return gree_build_frame(frame);
 }
 
 const ac_protocol_t gree_protocol = {
