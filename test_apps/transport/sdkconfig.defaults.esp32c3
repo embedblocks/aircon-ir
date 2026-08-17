@@ -1,9 +1,6 @@
 CONFIG_IDF_TARGET="esp32c3"
 
-# RX loopback GPIO for waveform capture. Jumper this pin to the ac_ir
-# TX GPIO (GPIO10). Override in menuconfig under
-# "AC IR Transport Test Configuration" if GPIO3 isn't free on your board.
-CONFIG_AC_IR_TEST_RX_GPIO=3
+
 
 # The edge dump can be several thousand lines for the primary 112-duration
 # test frame; a higher monitor baud keeps the pytest read fast.
