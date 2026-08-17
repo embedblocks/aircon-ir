@@ -7,12 +7,13 @@ idf_component_register(
         "src/ac_operation.c"
         "src/ac_protocol_factory.c"
         "src/ac_ir.c"
+        "src/protocols/gree.c"
         ${PROTOCOL_SOURCES} # Contains haier.c, midea.c ,....
 
     INCLUDE_DIRS
         "include"
 
-    PRIV_INCLUDE_DIRS
+    INCLUDE_DIRS
         "src"
 
     PRIV_REQUIRES
