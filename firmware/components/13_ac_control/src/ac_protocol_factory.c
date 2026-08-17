@@ -1,10 +1,10 @@
 #include "ac_protocol.h"
 
-#include "protocols/gree.h"
+#include "protocols/midea.h"
 
 
 
 const ac_protocol_t *ac_protocol_get(void)
 {
-    return &gree_protocol;
+    return &midea_protocol;
 }
