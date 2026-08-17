@@ -1,0 +1,30 @@
+version: "0.1.0"
+
+description: >
+  ESP-IDF component for controlling air conditioners over infrared using
+  the ESP32 RMT peripheral. Provides a common IR transmission layer with
+  protocol implementations for Gree, Haier, and Midea air conditioners.
+
+url: "https://github.com/emmbedblocks/aircon-ir"
+
+dependencies:
+  idf:
+    version: ">=5.0.0"
+
+tags:
+  - air-conditioner
+  - aircon
+  - hvac
+  - infrared
+  - ir
+  - rmt
+  - gree
+  - haier
+  - midea
+
+files:
+  use_gitignore: true
+  exclude:
+    - ".git/**/*"
+    - "docs/**/*"
+    - "dist/**/*"
