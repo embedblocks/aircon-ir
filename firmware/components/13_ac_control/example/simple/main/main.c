@@ -2,17 +2,24 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_system.h"
+
 
 static const char *TAG = "app";
 
 void app_main(void)
 {
+
+    ESP_LOGI(TAG, "=== BOOT === reset_reason=%d", esp_reset_reason());
     esp_err_t ret = ac_operation_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "AC initialization failed: %s",
                  esp_err_to_name(ret));
         return;
     }
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
 
     /*
      * Turn AC ON:
@@ -50,7 +57,7 @@ void app_main(void)
     command.temperature = 22;
     command.fan = AC_FAN_MEDIUM;
 
-    ret = ac_set_operation(&command);
+   // ret = ac_set_operation(&command);
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to change AC operation: %s",
