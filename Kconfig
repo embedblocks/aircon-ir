@@ -16,4 +16,11 @@ menu "AC Control"
             bool "Haier"
     endchoice
 
+    config IR_GPIO
+        int "IR Transmitter GPIO"
+        default 18
+        help
+            GPIO that controls the IR transmitter
+
+
 endmenu
