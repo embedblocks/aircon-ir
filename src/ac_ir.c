@@ -486,7 +486,7 @@ esp_err_t ac_ir_send(
     }
 
 
-    ESP_LOGI(TAG, "count=%u", frame->count);
+
 
     /*
 
@@ -504,7 +504,7 @@ esp_err_t ac_ir_send(
     };
 
 
-    ESP_LOGI(TAG, "=== fu ===");
+    
     esp_err_t ret =
         rmt_transmit(
             s_tx_channel,
@@ -514,7 +514,7 @@ esp_err_t ac_ir_send(
             &tx_config
         );
 
-    ESP_LOGI(TAG, "=== fu again===");
+    
     if (ret != ESP_OK) {
 
         ESP_LOGI(
@@ -538,6 +538,7 @@ esp_err_t ac_ir_send(
         5000
     );
 
+    /*
     ESP_LOGI(TAG, "=== ENCODER TRACE === %d",dbg_count);
 
         for (uint32_t i = 0; i < dbg_count && i < 16; i++) {
@@ -554,7 +555,7 @@ esp_err_t ac_ir_send(
 
     ESP_LOGI(TAG, "ENCODER CALL COUNT = %u",
          (unsigned)dbg_encode_calls);
-
+    */
     return rett;
 
 }
