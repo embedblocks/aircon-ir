@@ -18,7 +18,7 @@ Separates AC operation, AC protocol encoding, and IR/RMT transmission into indep
 * Correctly handles waveforms larger than the RMT hardware memory (multi-chunk transmission)
 * Correctly handles individual mark/space durations longer than the RMT hardware's 15-bit duration field (automatic splitting)
 * Hardware-generated 38 kHz IR carrier
-* Includes a working example and a Pytest-based hardware transport test app
+* Includes a working example and an interactive Unity-based test app that turns a serial terminal into an AC remote control
 
 ---
 
@@ -91,6 +91,8 @@ ac_switch_off();
 
 Application code only ever includes `ac_operation.h` and never needs to know whether the target AC is Haier, Midea, Gree, etc.
 
+> **Swing is unverified.** `ac_command_t` exposes `swing_v`/`swing_h`, but swing was not part of the original capture set (see [Data Provenance](#data-provenance)). Don't rely on it in a real deployment without capturing and checking it yourself first.
+
 ---
 
 ## Architecture
@@ -120,6 +122,57 @@ The important boundary:
 * `ac_ir.c` **transmits** that waveform.
 * Protocol implementations must never contain ESP-IDF RMT or GPIO transmission code.
 
+### Design Principle
+
+```text
+WHAT should the AC do?                        ac_command_t
+        ↓
+HOW does this AC brand encode it?             protocol implementation
+        ↓
+WHAT waveform should be transmitted?          ac_ir_frame_t
+        ↓
+HOW is the waveform physically transmitted?   ac_ir.c / ESP-IDF RMT
+```
+
+This separation allows new AC protocols to be added without changing application code or the physical IR transmission layer, and allows the IR transmission layer to be hardened (e.g. RMT memory handling, long-duration splitting) without touching any protocol implementation.
+
+### Directory Structure
+
+```text
+aircon-ir/
+│
+├── CMakeLists.txt
+├── Kconfig
+├── idf_component.yml
+├── README.md
+│
+├── include/
+│   └── ac_operation.h        Public, application-facing API
+│
+├── src/
+│   ├── ac_operation.c        Operation layer (init, encode, transmit)
+│   │
+│   ├── ac_protocol.h         Protocol interface (init/encode)
+│   ├── ac_protocol_factory.c Selects the active protocol via Kconfig
+│   │
+│   ├── ac_ir.h
+│   ├── ac_ir.c                Generic IR TX — ESP-IDF RMT, 38 kHz carrier
+│   ├── ac_ir_frame.h          Protocol-independent waveform type
+│   │
+│   └── protocols/
+│       ├── gree.h / gree.c
+│       ├── haier.h / haier.c
+│       └── midea.h / midea.c
+│
+├── example/
+│   └── simple/                Standalone example project
+│
+└── test_apps/
+    └── remote_control/        Interactive Unity test menu (serial-terminal remote control)
+```
+
+Only `include/` is public. Everything under `src/` — including the protocol implementations — is private to the component.
+
 ---
 
 ## Public API
@@ -130,7 +183,7 @@ Only `include/ac_operation.h` is public application-facing API:
 #include "ac_operation.h"
 ```
 
-`ac_command_t` represents the desired AC *operation*, not an IR protocol — it should only ever contain generic AC concepts (power, temperature, mode, fan, turbo, quiet, swing, sleep, health), never protocol-specific fields such as a Midea byte index or a Haier checksum. Those belong inside the corresponding protocol implementation.
+`ac_command_t` represents the desired AC *operation*, not an IR protocol — it should only ever contain generic AC concepts (power, temperature, mode, fan, turbo, quiet, swing, sleep, health), never protocol-specific fields such as a Midea byte index or a Haier checksum. Those belong inside the corresponding protocol implementation. For example, fields such as `midea_byte_3` or `haier_button` must never be added to `ac_command_t` — if a concept genuinely doesn't exist across AC brands, it stays inside that brand's protocol file instead of leaking into the generic API.
 
 ---
 
@@ -179,7 +232,33 @@ durations[3] = SPACE
 ...
 ```
 
-`ac_ir_frame_t` is intentionally protocol-independent, and its durations are not constrained by any RMT hardware limit — `ac_ir.c` is responsible for adapting arbitrary logical durations to the hardware representation.
+For example, `560, 560, 560, 1690` encodes two bits: a `560` mark + `560` space is a logical `0`, and a `560` mark + `1690` space is a logical `1`. `ac_ir_frame_t` is intentionally protocol-independent, and its durations are not constrained by any RMT hardware limit — `ac_ir.c` is responsible for adapting arbitrary logical durations to the hardware representation.
+
+### Data Provenance
+
+Each protocol was reverse-engineered from real remote captures, but not every `ac_command_t` field was part of that capture set. This matters because a field that "compiles and sends a frame" is not the same as a field that has been checked against a real remote.
+
+**Captured and verified against real remote transmissions**, for all three protocols:
+
+* Power (on/off)
+* Mode (cool, heat, dry, auto)
+* Temperature
+* Fan speed (low, medium, high, auto)
+
+**Not captured — swing (vertical and horizontal) was intentionally left out of the capture set** as it was judged non-essential at the time. As a result:
+
+* **Midea** — `midea.c` does not implement swing at all. `command->swing_v` and `command->swing_h` are silently ignored; nothing is encoded into the transmitted frame for them.
+* **Haier / Gree** — swing *is* encoded into the frame, but the bit values (`HAIER_SWING_V_*`, `HAIER_SWING_H_*`, `GREE_SWING_V_*`, `GREE_SWING_H_*`) are best-effort guesses based on typical layouts for that vendor, not values confirmed from a capture. They may be wrong, partially wrong, or map to the wrong physical position.
+
+If your application needs reliable swing control, capture it yourself (see [Running Tests](#running-tests)) and correct the relevant `protocols/<name>.c` before relying on it.
+
+### Protocol-Specific Notes
+
+These are examples of how much protocol detail is expected to live *inside* a protocol file, and never leak into `ac_operation.c` or `ac_ir.c`:
+
+**Midea** — a 3-byte logical packet (`[0xB2] [fan/state] [temperature/mode]`), where each byte is transmitted followed by its bitwise complement (so the transmitted payload is six bytes: `Byte0 ~Byte0 Byte1 ~Byte1 Byte2 ~Byte2`), using pulse-distance encoding (`0` = 1T mark + 1T space, `1` = 1T mark + 3T space), with the complete frame transmitted twice per command.
+
+**Haier** — a 14-byte state block with its own header timing, per-bit pulse-distance encoding, a trailing mark, and a modulo-256 checksum over bytes 0–12. The byte layout, checksum, header, and pulse timings are entirely internal to `haier.c`.
 
 ### Protocol Selection
 
@@ -237,6 +316,15 @@ Adding a new protocol still means adding a `choice` entry to the component's `Kc
 
 Create `src/protocols/<name>.h` and `src/protocols/<name>.c`. The component's `CMakeLists.txt` globs all sources under `src/`, so a new protocol file is picked up automatically without editing `CMakeLists.txt`.
 
+Rules to follow:
+
+1. **Keep the application API generic.** Do not expose protocol-specific fields through `ac_command_t` unless the feature genuinely exists across ACs.
+2. **Keep protocol logic in the protocol file** — byte layout, checksum, temperature/fan/mode encoding, and pulse timings all belong in e.g. `midea.c`, not in `ac_operation.c`.
+3. **Never put RMT code in a protocol implementation.** No `rmt_new_tx_channel()`, `rmt_transmit()`, or `rmt_apply_carrier()` inside any file under `protocols/`.
+4. **Protocols return waveforms.** The output of a protocol encoder is `ac_ir_frame_t`, not an RMT symbol array.
+5. **Keep the IR layer generic.** `ac_ir.c` must work without knowing whether the frame came from Haier, Midea, Gree, Panasonic, or anything else.
+6. **Verify against captures.** Capture the original remote first and compare it against the generated frame (see Testing below).
+
 Adding a new protocol must never require modifying `ac_ir.c`.
 
 ---
@@ -258,39 +346,44 @@ Handles everything protocol implementations must not:
 
 ### `example/simple`
 
-Minimal example showing initialization and sending a basic command.
+Walks through the full application-facing API against a single project: init, a full power-on command, cycling through modes (cool/heat/dry/auto), adjusting temperature and fan speed, toggling turbo/quiet/sleep/health, and powering off with `ac_switch_off()`. It also demonstrates `swing_v`/`swing_h` in one step, clearly marked as unverified (see [Data Provenance](#data-provenance)) rather than as a confirmed feature.
 
 ---
 
 ## Running Tests
 
 ```bash
-cd test_apps/transport
+cd test_apps/remote_control
 idf.py build flash monitor
 ```
 
-The transport test app includes Pytest-based waveform verification against expected mark/space timings.
+This flashes an interactive Unity test menu that turns the device's serial terminal into an AC remote control — each test case sends one real IR command, so you can drive the AC directly from the monitor instead of writing application code. Current menu entries:
 
----
+| Menu entry | Effect |
+|---|---|
+| Power ON | Powers the AC on (cool, 26 °C, auto fan) |
+| Power OFF | Powers the AC off |
+| Set Mode: COOL | Switches to cool mode |
+| Set Mode: HEAT | Switches to heat mode |
+| Increase Fan Speed | Cycles fan speed up (auto → low → medium → high → auto) |
+| Decrease Fan Speed | Cycles fan speed down (auto → high → medium → low → auto) |
+| Increase Temperature | +1 °C, capped at 30 °C |
+| Decrease Temperature | −1 °C, capped at 17 °C |
 
-## Design Principle
+For protocol-level verification (step 6 in "Adding a New Protocol"), compare a capture of the original remote against a capture of the ESP32's transmission, using an IR receiver on both:
 
 ```text
-WHAT should the AC do?              ac_command_t
-        ↓
-HOW does this AC brand encode it?   protocol implementation
-        ↓
-WHAT waveform should be transmitted?  ac_ir_frame_t
-        ↓
-HOW is the waveform physically transmitted?  ac_ir.c / ESP-IDF RMT
+Original remote → IR receiver → raw durations / decoded bytes
+ESP32 IR        → IR receiver → raw durations / decoded bytes
 ```
 
-This separation allows new AC protocols to be added without changing application code or the physical IR transmission layer, and allows the IR transmission layer to be hardened (e.g. RMT memory handling, long-duration splitting) without touching any protocol implementation.
+The two should decode to the same protocol-level message. This keeps protocol-encoding bugs separate from RMT/carrier/hardware bugs.
 
 ---
 
 ## Known Limitations
 
+* **Swing (`swing_v`/`swing_h`) is unverified** — see [Data Provenance](#data-provenance). Not implemented at all for Midea; best-effort/unconfirmed for Haier and Gree.
 * Adding a new protocol currently requires a `Kconfig` `choice` entry plus a matching `#elif` branch in `ac_protocol_factory.c`; a self-registering protocol registry (so the factory needs no changes at all) is on the roadmap
 * Tested primarily on ESP32-C3; other targets are expected to work but not yet verified
 
