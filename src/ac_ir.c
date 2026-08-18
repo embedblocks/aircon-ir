@@ -488,12 +488,14 @@ esp_err_t ac_ir_send(
 
     ESP_LOGI(TAG, "count=%u", frame->count);
 
+    /*
 
     for (size_t i = 0; i < frame->count; i++) {
         ESP_LOGI(TAG, "duration[%u] = %u",
                 (unsigned)i,
                 (unsigned)frame->durations[i]);
     }
+                */
     /*
      * One-shot transmission.
      */
