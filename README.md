@@ -52,12 +52,15 @@ dependencies:
 
 ## Usage
 
-Select the target AC protocol before building (defaults to Midea if skipped):
+Select the target AC protocol and IR transmitter GPIO before building (protocol defaults to Midea, GPIO defaults to 18, if skipped):
 
 ```
 idf.py menuconfig
 Component config → AC Control → AC IR Protocol
+Component config → AC Control → IR Transmitter GPIO
 ```
+
+> **Wiring note:** the configured GPIO only *switches* the IR LED (through a transistor/MOSFET driver stage, as is standard for IR blasters) — it does not supply its power directly. Do not wire the IR LED to be powered straight from the GPIO pin; the pin doesn't source enough current to drive an IR LED at useful range, and doing so risks damaging the pin.
 
 ```c
 #include "ac_operation.h"
