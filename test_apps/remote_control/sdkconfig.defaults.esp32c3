@@ -1,0 +1,18 @@
+CONFIG_IR_GPIO=10
+
+
+
+
+
+# The edge dump can be several thousand lines for the primary 112-duration
+# test frame; a higher monitor baud keeps the pytest read fast.
+
+
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_ESPTOOLPY_MONITOR_BAUD=921600
+CONFIG_MONITOR_BAUD=921600
+
+# Same fix as test_apps/test_app/sdkconfig.defaults: ESP32-C3 boards with
+# only native USB need console I/O routed to USB Serial/JTAG, or stdin
+# (fgets in app_main) silently doesn't work even though stdout does.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

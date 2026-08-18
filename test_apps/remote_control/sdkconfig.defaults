@@ -1,0 +1,3 @@
+# Tests involve long vTaskDelays for visual inspection
+CONFIG_ESP_TASK_WDT_EN=n
+CONFIG_IR_GPIO=18
