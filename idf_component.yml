@@ -12,11 +12,11 @@ dependencies:
     version: ">=5.0.0"
 
 tags:
-  - air-conditioner
+  - air
+  - conditioner
   - aircon
   - hvac
   - infrared
-  - ir
   - rmt
   - gree
   - haier
