@@ -9,7 +9,7 @@
 #include "driver/gpio.h"
 #define TAG "ac_ir"
 
-#define AC_IR_TX_GPIO           10
+#define AC_IR_TX_GPIO          CONFIG_IR_GPIO
 
 #define AC_IR_RESOLUTION_HZ    1000000
 #define AC_IR_CARRIER_FREQ_HZ  38000
