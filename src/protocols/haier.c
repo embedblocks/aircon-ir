@@ -7,32 +7,17 @@
 #define HAIER_STATE_BYTES             14
 #define HAIER_IR_FRAME_MAX_DURATIONS  229
 
-/*
- * Haier-specific header from the captured protocol.
- *
- * 3000 mark
- * 3000 space
- * 3000 mark
- * 4370 space
- */
-#define HAIER_HEADER_MARK_1   3000
-#define HAIER_HEADER_SPACE_1  3000
-#define HAIER_HEADER_MARK_2   3000
-#define HAIER_HEADER_SPACE_2  4370
+/* Exact nominal timings derived from PulseView captures */
+#define HAIER_HEADER_MARK_1   3010
+#define HAIER_HEADER_SPACE_1  3075
+#define HAIER_HEADER_MARK_2   3010
+#define HAIER_HEADER_SPACE_2  4430
 
-/*
- * Nominal pulse-distance encoding.
- *
- * 0 = 562.5 us mark + 562.5 us space
- * 1 = 562.5 us mark + 1687.5 us space
- *
- * Rounded to integer microseconds for the 1 MHz RMT clock.
- */
-#define HAIER_BIT_MARK        563
-#define HAIER_ZERO_SPACE      563
-#define HAIER_ONE_SPACE       1688
+#define HAIER_BIT_MARK        545
+#define HAIER_ZERO_SPACE      545
+#define HAIER_ONE_SPACE       1680
 
-#define HAIER_TRAILING_MARK   563
+#define HAIER_TRAILING_MARK   545
 
 #define HAIER_MODEL_A         0xA6
 
@@ -40,14 +25,24 @@
 #define HAIER_MAX_TEMP        30
 
 
-/* Fan field */
+/* -------------------------------------------------------------------------- */
+/* Fan field                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * AUTO = 0x05 is confirmed from captures.
+ * LOW / MEDIUM / HIGH are still provisional.
+ */
 #define HAIER_FAN_HIGH        0x01
 #define HAIER_FAN_MEDIUM      0x02
 #define HAIER_FAN_LOW         0x03
 #define HAIER_FAN_AUTO        0x05
 
 
-/* Mode field */
+/* -------------------------------------------------------------------------- */
+/* Mode field                                                                 */
+/* -------------------------------------------------------------------------- */
+
 #define HAIER_MODE_AUTO       0x00
 #define HAIER_MODE_COOL       0x01
 #define HAIER_MODE_DRY        0x02
@@ -55,7 +50,10 @@
 #define HAIER_MODE_FAN        0x06
 
 
-/* Vertical swing field */
+/* -------------------------------------------------------------------------- */
+/* Vertical swing field                                                       */
+/* -------------------------------------------------------------------------- */
+
 #define HAIER_SWING_V_OFF     0x0
 #define HAIER_SWING_V_TOP     0x1
 #define HAIER_SWING_V_MIDDLE  0x2
@@ -64,26 +62,19 @@
 #define HAIER_SWING_V_AUTO    0xC
 
 
-/* Horizontal swing field */
+/* -------------------------------------------------------------------------- */
+/* Horizontal swing field                                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * These mappings are currently provisional.
+ */
 #define HAIER_SWING_H_MIDDLE    0x0
 #define HAIER_SWING_H_LEFT_MAX  0x3
 #define HAIER_SWING_H_LEFT      0x4
 #define HAIER_SWING_H_RIGHT     0x5
 #define HAIER_SWING_H_RIGHT_MAX 0x6
 #define HAIER_SWING_H_AUTO      0x7
-
-
-/* Button field */
-#define HAIER_BUTTON_TEMP_UP    0x00
-#define HAIER_BUTTON_TEMP_DOWN  0x01
-#define HAIER_BUTTON_SWING_V    0x02
-#define HAIER_BUTTON_SWING_H    0x03
-#define HAIER_BUTTON_FAN        0x04
-#define HAIER_BUTTON_POWER      0x05
-#define HAIER_BUTTON_MODE       0x06
-#define HAIER_BUTTON_HEALTH     0x07
-#define HAIER_BUTTON_TURBO      0x08
-#define HAIER_BUTTON_SLEEP      0x0B
 
 
 static uint8_t haier_state[HAIER_STATE_BYTES];
@@ -140,7 +131,7 @@ static esp_err_t haier_push_bit(
 
 
 /* -------------------------------------------------------------------------- */
-/* AC enum → Haier field                                                      */
+/* AC enum -> Haier field                                                      */
 /* -------------------------------------------------------------------------- */
 
 static uint8_t haier_encode_fan(ac_fan_t fan)
@@ -245,6 +236,10 @@ static uint8_t haier_encode_swing_h(ac_swing_h_t swing)
 static esp_err_t haier_build_state(
     const ac_command_t *command)
 {
+    if (command == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (command->temperature < HAIER_MIN_TEMP ||
         command->temperature > HAIER_MAX_TEMP) {
         return ESP_ERR_INVALID_ARG;
@@ -256,10 +251,11 @@ static esp_err_t haier_build_state(
         sizeof(haier_state)
     );
 
+
     /*
      * Byte 0:
      *
-     * Model = A
+     * Model = A6
      */
     haier_state[0] = HAIER_MODEL_A;
 
@@ -267,8 +263,8 @@ static esp_err_t haier_build_state(
     /*
      * Byte 1:
      *
-     * bits 0..3 = vertical swing
      * bits 4..7 = temperature - 16
+     * bits 0..3 = vertical swing
      */
     uint8_t temperature =
         command->temperature - HAIER_MIN_TEMP;
@@ -277,8 +273,8 @@ static esp_err_t haier_build_state(
         haier_encode_swing_v(command->swing_v);
 
     haier_state[1] =
-        (swing_v & 0x0F) |
-        ((temperature & 0x0F) << 4);
+        ((temperature & 0x0F) << 4) |
+        (swing_v & 0x0F);
 
 
     /*
@@ -296,27 +292,27 @@ static esp_err_t haier_build_state(
     /*
      * Byte 3:
      *
-     * Health = bit 1.
+     * Health = bit 1
      */
     if (command->health) {
-        haier_state[3] |= (1 << 1);
+        haier_state[3] |= (1U << 1);
     }
 
 
     /*
      * Byte 4:
      *
-     * Power = bit 6.
+     * Power = bit 6
      */
     if (command->power) {
-        haier_state[4] |= (1 << 6);
+        haier_state[4] |= (1U << 6);
     }
 
 
     /*
      * Byte 5:
      *
-     * Fan = bits 5..7.
+     * Fan = bits 5..7
      */
     haier_state[5] =
         (haier_encode_fan(command->fan) & 0x07) << 5;
@@ -329,18 +325,18 @@ static esp_err_t haier_build_state(
      * Quiet = bit 7
      */
     if (command->turbo) {
-        haier_state[6] |= (1 << 6);
+        haier_state[6] |= (1U << 6);
     }
 
     if (command->quiet) {
-        haier_state[6] |= (1 << 7);
+        haier_state[6] |= (1U << 7);
     }
 
 
     /*
      * Byte 7:
      *
-     * Mode = bits 5..7.
+     * Mode = bits 5..7
      */
     haier_state[7] =
         (haier_encode_mode(command->mode) & 0x07) << 5;
@@ -349,35 +345,41 @@ static esp_err_t haier_build_state(
     /*
      * Byte 8:
      *
-     * Sleep = bit 7.
+     * Sleep = bit 7
      */
     if (command->sleep) {
-        haier_state[8] |= (1 << 7);
+        haier_state[8] |= (1U << 7);
     }
 
 
     /*
      * Bytes 9..11:
      *
-     * Timers and other fields.
-     * Not exposed in V1, therefore zero.
+     * Timers / other fields.
+     * Not currently exposed.
      */
 
 
     /*
      * Byte 12:
-     
-     * Byte 12: Button command.
-     * FIX: Use TEMP_UP (0x00) instead of POWER (0x05) so the AC unit
-     * updates its state without toggling power.
+     *
+     *
+     *
+     * The current common ac_command_t interface does not expose
+     * that information, so V1 uses TEMP_UP (0x00), which is the
+     * value observed in the temperature-change captures.
+     *
+     * IMPORTANT:
+     * This is a protocol limitation, not a generic "state update"
+     * value. FAN/MODE/POWER captures use different values.
      */
-    haier_state[12] = HAIER_BUTTON_TEMP_UP;
+    haier_state[12] = 0x00;
 
 
     /*
      * Byte 13:
      *
-     * Checksum.
+     * Checksum = sum of bytes 0..12, modulo 256.
      */
     uint8_t checksum = 0;
 
@@ -403,12 +405,12 @@ static esp_err_t haier_build_frame(
 
 
     /*
-     * Haier header:
+     * Header:
      *
-     * 3000 mark
-     * 3000 space
-     * 3000 mark
-     * 4370 space
+     * 3010 mark
+     * 3075 space
+     * 3010 mark
+     * 4430 space
      */
     esp_err_t ret = haier_push_pair(
         frame,
@@ -434,7 +436,7 @@ static esp_err_t haier_build_frame(
     /*
      * 14 bytes × 8 bits = 112 bits.
      *
-     * NEC-style transmission is LSB first.
+     * Captured protocol is MSB first.
      */
     for (size_t byte = 0; byte < HAIER_STATE_BYTES; byte++) {
 
@@ -442,7 +444,7 @@ static esp_err_t haier_build_frame(
 
             ret = haier_push_bit(
                 frame,
-                (haier_state[byte] >> (7 - bit)) & 1  // <--- FIXED: MSB first
+                (haier_state[byte] >> (7 - bit)) & 0x01
             );
 
             if (ret != ESP_OK) {
@@ -463,7 +465,7 @@ static esp_err_t haier_build_frame(
 
 
 /* -------------------------------------------------------------------------- */
-/* Protocol interface                                                        */
+/* Protocol interface                                                         */
 /* -------------------------------------------------------------------------- */
 
 static esp_err_t haier_init(void)
