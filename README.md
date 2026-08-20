@@ -38,14 +38,14 @@ Separates AC operation, AC protocol encoding, and IR/RMT transmission into indep
 ### Using ESP-IDF Component Manager (Recommended)
 
 ```bash
-idf.py add-dependency "emmbedblocks/aircon-ir^0.1.0"
+idf.py add-dependency "emmbedblocks/aircon-ir^0.1.1"
 ```
 
 Or in your project's `idf_component.yml`:
 
 ```yaml
 dependencies:
-  emmbedblocks/aircon-ir: "^0.1.0"
+  emmbedblocks/aircon-ir: "^0.1.1"
 ```
 
 ---
